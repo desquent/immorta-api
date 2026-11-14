@@ -30,8 +30,11 @@ return [
     'api' => [
         // Limite taille corps HTTP avant décodage JSON (octets)
         'max_body_bytes' => 1048576,
-        // Liste blanche des actions autorisées (dispatch explicite)
+        // Le probe M0 est volontairement désactivé par défaut.
+        'm0_probe_enabled' => false,
+        // Liste blanche de l'enveloppe ; le dispatch applique en plus le registre M0.
         'allowed_actions' => [
+            'm0_probe',
             'claim_job',
             'get_job',
             'renew_lease',
