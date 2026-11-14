@@ -95,9 +95,6 @@ function immorta_idempotency_begin(
     $hash = immorta_payload_hash($payload);
     $ttl = immorta_idempotency_ttl($config);
 
-    $now = gmdate('Y-m-d H:i:s');
-    $expires = gmdate('Y-m-d H:i:s', time() + $ttl);
-
     try {
         $pdo->beginTransaction();
 
@@ -120,21 +117,18 @@ function immorta_idempotency_begin(
                     :action,
                     :payload_hash,
                     'in_progress',
-                    :started_at,
-                    :heartbeat,
-                    :expires_at
+                    UTC_TIMESTAMP(),
+                    UTC_TIMESTAMP(),
+                    DATE_ADD(UTC_TIMESTAMP(), INTERVAL :ttl SECOND)
                 )"
         );
 
-        $stmt->execute([
-            ':worker_id' => $workerId,
-            ':request_id' => $requestId,
-            ':action' => $action,
-            ':payload_hash' => $hash,
-            ':started_at' => $now,
-            ':heartbeat' => $now,
-            ':expires_at' => $expires,
-        ]);
+        $stmt->bindValue(':worker_id', $workerId);
+        $stmt->bindValue(':request_id', $requestId);
+        $stmt->bindValue(':action', $action);
+        $stmt->bindValue(':payload_hash', $hash);
+        $stmt->bindValue(':ttl', $ttl, PDO::PARAM_INT);
+        $stmt->execute();
 
         $id = (int)$pdo->lastInsertId();
 
@@ -183,7 +177,8 @@ function immorta_idempotency_begin(
                 started_at,
                 last_heartbeat_at,
                 expires_at,
-                completed_at
+                completed_at,
+                (expires_at <= UTC_TIMESTAMP()) AS is_expired
              FROM immorta_api_idempotency
              WHERE worker_id = :worker_id
                AND request_id = :request_id
@@ -237,17 +232,20 @@ function immorta_idempotency_begin(
          */
         if (
             $record['status'] === 'in_progress'
-            && strtotime((string)$record['expires_at'] . ' UTC') <= time()
+            && (int)$record['is_expired'] === 1
         ) {
             $update = $pdo->prepare(
                 "UPDATE immorta_api_idempotency
                  SET status = 'stale'
                  WHERE id = :id
-                   AND status = 'in_progress'"
+                   AND status = 'in_progress'
+                   AND expires_at <= UTC_TIMESTAMP()"
             );
 
             $update->execute([':id' => $record['id']]);
-            $record['status'] = 'stale';
+            if ($update->rowCount() === 1) {
+                $record['status'] = 'stale';
+            }
         }
 
         $pdo->commit();
@@ -316,6 +314,10 @@ function immorta_idempotency_store_response(
 
     if ($httpCode < 100 || $httpCode > 599) {
         throw new InvalidArgumentException('Invalid HTTP response code');
+    }
+
+    if (!$pdo->inTransaction()) {
+        throw new LogicException('Idempotency response must be stored inside the handler transaction');
     }
 
     if (strlen($responseBody) > 16777215) {
