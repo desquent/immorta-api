@@ -11,10 +11,13 @@ require_once __DIR__ . '/lib/bootstrap.php';
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
 
+// Préserver le request_id dès que l'enveloppe est validée.
+$activeRequestId = null;
+
 // Gestion globale des exceptions non interceptées (aucun détail interne exposé)
-set_exception_handler(static function (Throwable $e): void {
+set_exception_handler(static function (Throwable $e) use (&$activeRequestId): void {
     // Ne pas journaliser secrets/corps ; réponse générique
-    immorta_error(null, 'INTERNAL_ERROR', 'Service unavailable', 500);
+    immorta_error($activeRequestId, 'INTERNAL_ERROR', 'Service unavailable', 500);
 });
 set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {
     if (!(error_reporting() & $severity)) {
@@ -63,10 +66,14 @@ if (!$body['ok']) {
     immorta_error(null, $code, $msg, $http);
 }
 
-$envelope = immorta_validate_envelope($body['data'], $allowedActions);
+// m0_probe traverse la validation d'enveloppe pour que le dispatch puisse appliquer
+// les deux gardes (feature flag + allowlist) et répondre 501 sans réservation si elles échouent.
+$envelopeAllowedActions = array_merge($allowedActions, ['m0_probe']);
+$envelope = immorta_validate_envelope($body['data'], $envelopeAllowedActions);
 if (!$envelope['ok']) {
     immorta_error($envelope['request_id'] ?? null, $envelope['code'], $envelope['message'], 400);
 }
+$activeRequestId = $envelope['request_id'];
 
 // Authentification HMAC (signature sur le corps brut, chemin canonique figé en config)
 $headers = immorta_get_headers_lower();
