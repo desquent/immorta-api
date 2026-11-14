@@ -17,35 +17,49 @@ function immorta_json_headers(): void
     }
 }
 
-function immorta_send(array $payload, int $httpStatus = 200): never
+function immorta_response_body(bool $success, ?string $requestId, string $code, ?array $data, ?array $error): string
+{
+    try {
+        return json_encode([
+            'success' => $success,
+            'request_id' => $requestId,
+            'code' => $code,
+            'data' => $data === null ? null : (object)$data,
+            'error' => $error,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    } catch (JsonException $e) {
+        throw new RuntimeException('Unable to encode API response', 0, $e);
+    }
+}
+
+function immorta_emit_body(string $body, int $httpStatus): never
 {
     immorta_json_headers();
     http_response_code($httpStatus);
-    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo $body;
     exit;
+}
+
+function immorta_send(array $payload, int $httpStatus = 200): never
+{
+    try {
+        $body = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    } catch (JsonException $e) {
+        http_response_code(500);
+        exit;
+    }
+    immorta_emit_body($body, $httpStatus);
 }
 
 function immorta_success(?string $requestId, string $code, array $data = []): never
 {
-    immorta_send([
-        'success' => true,
-        'request_id' => $requestId,
-        'code' => $code,
-        'data' => (object)$data,
-        'error' => null,
-    ], 200);
+    immorta_emit_body(immorta_response_body(true, $requestId, $code, $data, null), 200);
 }
 
 function immorta_error(?string $requestId, string $code, string $message, int $httpStatus = 400): never
 {
     // Message destiné au worker : générique/ciblé, jamais d’interna (SQL, stack, chemins, secrets).
-    immorta_send([
-        'success' => false,
-        'request_id' => $requestId,
-        'code' => $code,
-        'data' => null,
-        'error' => ['message' => $message],
-    ], $httpStatus);
+    immorta_emit_body(immorta_response_body(false, $requestId, $code, null, ['message' => $message]), $httpStatus);
 }
 
 function immorta_get_headers_lower(): array
